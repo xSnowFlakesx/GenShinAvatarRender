@@ -3,14 +3,12 @@ Shader "Unlit/Genshin_Face_Render"
     Properties //着色器的输入 
     {
         _BaseMap ("Base Color", 2D) = "white" {}
-        //_AlphaTex("Alpha Tex", 2D) = "white"
-        //_ILMTex ("ILM Texture", 2D) = "white" {}
+        
         _DiffuseColor ("Diffuse Color", Color) = (1,1,1,1)
         _AmbientColor ("Ambient Color", Color) = (0.5,0.5,0.5,1)
         _ShadowColor ("Shadow Color", Color) = (0.7,0.7,0.7,1)
         _AmbientIntensity ("Ambient Intensity", Range(0, 1)) = 0.5
-        //_NormalMap ("Normal Map", 2D) = "bump" {}
-        //_BumpScale ("Normal Scale", Range(0, 1)) = 1.0
+       
         _RampTex ("Ramp Texture", 2D) = "white" {}
         _SDFTex ("SDF Tex", 2D) = "white" {}
         _ShadowMaskTex ("Shadow Mask", 2D) = "white" {}
@@ -21,16 +19,17 @@ Shader "Unlit/Genshin_Face_Render"
         _SphereTexFac("SphereTexFac", Range(0, 1)) = 0
         _SphereMulAdd("SphereMul/Add", Range(0, 1)) = 0
 
-        // _SpecExpon("Specular Expon", Range(0, 100)) = 50
-        // _KsNonMetallic("KsNonMetallic", Range(0, 3)) = 1
-        // _KsMetallic("KsMetallic", Range(0, 3)) = 1
-        // _MetallicTex("MetallicTex", 2D) = "white" {}
-
         _RampMapRow0("RampMapRow0", Range(1,5)) = 1
         _RampMapRow1("RampMapRow1", Range(1,5)) = 4
         _RampMapRow2("RampMapRow2", Range(1,5)) = 3
         _RampMapRow3("RampMapRow3", Range(1,5)) = 5
         _RampMapRow4("RampMapRow4", Range(1,5)) = 2
+
+        [Header(ScreenRim)]
+        _RimOffset("Rim Offset", Range(0, 10)) = 4
+        _RimThreshold("Rim Threshold", Range(0, 1)) = 0.03
+        _RimColor("Rim Color", Color) = (1, 1, 1, 1)
+        _RimIntensity("Rim Intensity", Range(0, 10)) = 1
 
         [Header(OutLine)]
         _OutLineWidth("OutLine Width", Range(0,5)) = 0.1
@@ -98,8 +97,6 @@ Shader "Unlit/Genshin_Face_Render"
 
         CBUFFER_START(UnityPerMaterial) //声明变量
             float4 _BaseMap_ST;
-            //float4 _NormalMap_ST;
-            //float _BumpScale;
             float4 DiffuseColor;
             float _BaseTexFac;
             float _ToonTexFac;
@@ -120,17 +117,14 @@ Shader "Unlit/Genshin_Face_Render"
             float4 _HeadForward;
             float4 _HeadRight;
             float4 _FlowTillingSpeed;
-            // float _SpecExpon;
-            // float _KsNonMetallic;
-            // float _KsMetallic;
+            float _RimOffset;
+            float4 _RimColor;
+            float _RimIntensity;
+            float _RimThreshold;
         CBUFFER_END
 
         TEXTURE2D(_BaseMap); //贴图采样  
         SAMPLER(sampler_BaseMap);
-        //TEXTURE2D(_NormalMap);
-        //SAMPLER(sampler_NormalMap);
-        //TEXTURE2D(_ILMTex);
-        //SAMPLER(sampler_ILMTex);
         TEXTURE2D(_ToonTex);
         SAMPLER(sampler_ToonTex);
         TEXTURE2D(_SphereTex);
@@ -190,7 +184,7 @@ Shader "Unlit/Genshin_Face_Render"
                 float3 positionWS : TEXCOORD1;
                 float3 positionVS : TEXCOORD2;
                 float4 positionCS : SV_POSITION;
-                float3 positionNDC : TEXCOORD3;
+                float4 positionNDC : TEXCOORD3;
                 float3 normalWS : TEXCOORD4;
                 float3 tangentWS : TEXCOORD5;
                 float3 bitangentWS : TEXCOORD6;
@@ -200,6 +194,9 @@ Shader "Unlit/Genshin_Face_Render"
             Varyings vert (Attributes input)//顶点着色器
             {
                 Varyings output;
+
+                VertexPositionInputs vertexInput = GetVertexPositionInputs(input.positionOS.xyz);
+                output.positionNDC = vertexInput.positionNDC;
 
                 // 初始化 positionCS
                 output.positionCS = TransformObjectToHClip(input.positionOS);
@@ -213,7 +210,6 @@ Shader "Unlit/Genshin_Face_Render"
                 // 初始化其他字段
                 output.positionWS = TransformObjectToWorld(input.positionOS).xyz;
                 output.positionVS = TransformWorldToView(output.positionWS);
-                output.positionNDC = output.positionCS.xyz / output.positionCS.w;
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
                 output.tangentWS = TransformObjectToWorldDir(input.tangentOS.xyz);
                 output.bitangentWS = cross(output.normalWS, output.tangentWS) * input.tangentOS.w;
@@ -223,12 +219,6 @@ Shader "Unlit/Genshin_Face_Render"
 
             half4 frag (Varyings input) : SV_Target  // 片元着色器
             {
-
-                // //NormalMap 法线纹理采样
-                // float4 PackedNormal = SAMPLE_TEXTURE2D(_NormalMap, sampler_NormalMap, input.uv);
-                // float3 pixelNormalTS = UnpackNormalScale(PackedNormal, _BumpScale);
-                // float3x3 TBN = float3x3(input.tangentWS, input.bitangentWS, input.normalWS);
-                // float3 pixelNormal = normalize(mul(pixelNormalTS, TBN));
 
                 //向量计算
                 float3 N = normalize(input.normalWS);
@@ -305,13 +295,7 @@ Shader "Unlit/Genshin_Face_Render"
                 float Ramp1 = _RampMapRow1/10 - 0.05;
                 float Ramp2 = _RampMapRow2/10 - 0.05;
                 float Ramp3 = _RampMapRow3/10 - 0.05;
-                float Ramp4 = _RampMapRow4/10 - 0.05; 
-
-                // float dayRampV = lerp(Ramp4, Ramp3, step(ILMTex.a, (MatEnum3 + MatEnum4) / 2));
-                // dayRampV = lerp(dayRampV, Ramp2, step(ILMTex.a, (MatEnum2 + MatEnum3) / 2));
-                // dayRampV = lerp(dayRampV, Ramp1, step(ILMTex.a, (MatEnum1 + MatEnum2) / 2));
-                // dayRampV = lerp(dayRampV, Ramp0, step(ILMTex.a, (MatEnum0 + MatEnum1) / 2));
-                // float nightRampV = dayRampV + 0.5;
+                float Ramp4 = _RampMapRow4/10 - 0.05;
 
                 
 
@@ -372,41 +356,7 @@ Shader "Unlit/Genshin_Face_Render"
                 float HalfLambert = pow(Lambert * 0.5 + 0.5, 2);
                 float LambertStep = smoothstep(0.423, 0.450, HalfLambert);
 
-                //float rampGrayU = clamp(smoothstep(0.2, 0.4, HalfLambert),0.003,0.997);
-                //float2 rampGrayDayUV = float2(rampGrayU, 1 - dayRampV);
-                //float2 rampGrayNightUV = float2(rampGrayU, 1 - nightRampV);
-
-                //float rampDrakU = 0.003;
-                //float2 rampDarkDayUV = float2(rampDrakU, 1 - dayRampV);
-                //float2 rampDarkNightUV = float2(rampDrakU, 1 - nightRampV);
-
-                //float Day = (L.y + 1)/2;
-                //float3 rampGrayColor = lerp(SAMPLE_TEXTURE2D(_RampTex, sampler_RampTex, rampGrayNightUV).rgb, SAMPLE_TEXTURE2D(_RampTex, sampler_RampTex, rampGrayDayUV).rgb, Day);
-                //float3 rampDarkColor = lerp(SAMPLE_TEXTURE2D(_RampTex, sampler_RampTex, rampDarkNightUV).rgb, SAMPLE_TEXTURE2D(_RampTex, sampler_RampTex, rampDarkDayUV).rgb, Day);
-
-                //float3 GrayShadowColor = baseColor * rampGrayColor * _ShadowColor.rgb;
-                //float3 DarkShadowColor = baseColor * rampDarkColor * _ShadowColor.rgb;
-
-                //float3 diffuse = 0;
-                //diffuse = lerp(GrayShadowColor, baseColor, LambertStep);
-                //diffuse = lerp(DarkShadowColor, diffuse, saturate(ILMTex.g * 2));
-                //diffuse = lerp(diffuse, baseColor, saturate(ILMTex.g - 0.5) * 2);
-                //diffuse *= lightColor;
-
-                //Highlight
-                // float blinnPhong = step(0,NoL) * pow(max(0,NoH),_SpecExpon);
-                // float3 NonMetallicSpec = step(1.04 - blinnPhong, ILMTex.b) * ILMTex.r * _KsNonMetallic;
-                // float3 MetallicSpec = blinnPhong * ILMTex.b * (LambertStep * 0.8 + 0.2) * baseColor * _KsMetallic;
-
-                // float isMetallic = step(0.95, ILMTex.r);
-
-                // float3 Specular = lerp(NonMetallicSpec, MetallicSpec, isMetallic);
-
-                // float3 Metallic = lerp(0, SAMPLE_TEXTURE2D(_MetallicTex, sampler_MetallicTex, matCapUV).r * baseColor, isMetallic);
-
-                // float3 albedo = diffuse + Specular + Metallic;
-                //float specular = SAMPLE_TEXTURE2D(_ILMTex, sampler_ILMTex, input.uv).r;
-
+                
                 //Flow Light
                 float FlowMaskFace = 0;
                 float FlowMap = 0;
@@ -426,7 +376,27 @@ Shader "Unlit/Genshin_Face_Render"
                 }
                 #endif
 
-                float3 albedo = diffuse +  FlowColor;
+                //Screen Rim
+                float2 screenUV = input.positionNDC.xy / input.positionNDC.w;
+                float rawDepth = SampleSceneDepth(screenUV);
+                float linearDepth = LinearEyeDepth(rawDepth, _ZBufferParams);
+                float2 screenOffset = float2(lerp(-1, 1, step(0, normalVS.x)) * _RimOffset / _ScreenParams.x / max(1,pow(linearDepth, 2)), 0);
+                float offsetDepth = SampleSceneDepth(screenUV + screenOffset);
+                float offsetLinearDepth = LinearEyeDepth(offsetDepth, _ZBufferParams);
+
+                float Rim = saturate(offsetLinearDepth - linearDepth);
+                Rim = step(_RimThreshold, Rim) * _RimIntensity;
+                Rim *= _RimColor * baseColor;
+                
+                float fresnelPower = 6;
+                float fresnelClamp = 0.8;
+                float fresnel = 1 - saturate(NoV);
+                fresnel = pow(fresnel, fresnelPower);
+                fresnel = fresnel * fresnelClamp + (1 - fresnelClamp);
+
+                float3 albedo = diffuse;
+                albedo =  1 - (1 - Rim * fresnel) * (1 - albedo);
+                albedo +=  FlowColor;
 
 
                 //环境光
