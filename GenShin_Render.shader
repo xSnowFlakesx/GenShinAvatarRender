@@ -31,6 +31,12 @@ Shader "Unlit/GenShin_Render"
         _RampMapRow3("RampMapRow3", Range(1,5)) = 5
         _RampMapRow4("RampMapRow4", Range(1,5)) = 2
 
+        [Header(ScreenRim)]
+        _RimOffset("Rim Offset", Range(0, 10)) = 4
+        _RimThreshold("Rim Threshold", Range(0, 1)) = 0.03
+        _RimColor("Rim Color", Color) = (1, 1, 1, 1)
+        _RimIntensity("Rim Intensity", Range(0, 10)) = 1
+
         [Header(OutLine)]
         _OutLineWidth("OutLine Width", Range(0,5)) = 0.1
         _MaxOutlineZoffset("Max Outline Zoffset", Range(0,0.1)) = 0.01
@@ -134,6 +140,10 @@ Shader "Unlit/GenShin_Render"
             float _KsNonMetallic;
             float _KsMetallic;
             float4 _FlowTillingSpeed;
+            float _RimOffset;
+            float4 _RimColor;
+            float _RimIntensity;
+            float _RimThreshold;
         CBUFFER_END
 
         TEXTURE2D(_BaseMap); //贴图采样  
@@ -198,7 +208,7 @@ Shader "Unlit/GenShin_Render"
                 float3 positionWS : TEXCOORD1;
                 float3 positionVS : TEXCOORD2;
                 float4 positionCS : SV_POSITION;
-                float3 positionNDC : TEXCOORD3;
+                float4 positionNDC : TEXCOORD3;
                 float3 normalWS : TEXCOORD4;
                 float3 tangentWS : TEXCOORD5;
                 float3 bitangentWS : TEXCOORD6;
@@ -209,6 +219,9 @@ Shader "Unlit/GenShin_Render"
             Varyings vert (Attributes input)//顶点着色器
             {
                 Varyings output;
+
+                VertexPositionInputs vertexInput = GetVertexPositionInputs(input.positionOS.xyz);
+                output.positionNDC = vertexInput.positionNDC;
 
                 // 初始化 positionCS
                 output.positionCS = TransformObjectToHClip(input.positionOS);
@@ -224,7 +237,7 @@ Shader "Unlit/GenShin_Render"
                 // 初始化其他字段
                 output.positionWS = TransformObjectToWorld(input.positionOS).xyz;
                 output.positionVS = TransformWorldToView(output.positionWS);
-                output.positionNDC = output.positionCS.xyz / output.positionCS.w;
+                
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
                 output.tangentWS = TransformObjectToWorldDir(input.tangentOS.xyz);
                 output.bitangentWS = cross(output.normalWS, output.tangentWS) * input.tangentOS.w;
@@ -261,7 +274,7 @@ Shader "Unlit/GenShin_Render"
 
 
                 
-
+                //Screen Space Shadow
                  float shadowAttenuation = 1.0;
                 
                 #if _SCREEN_SPACE_SHADOW
@@ -392,12 +405,36 @@ Shader "Unlit/GenShin_Render"
                 }
                 #endif
 
+                
+
                 // // 计算 FlowColor 的强度（可用 FlowMask 或 FlowColor 的亮度）
                 // float flowStrength = saturate(length(FlowColor)); // 或直接用 FlowMask
 
                 // // 用 flowStrength 控制插值
                 // float3 finalAlbedo = lerp(albedo, FlowColor, flowStrength);
-                float3 albedo = diffuse + Specular + Metallic + FlowColor;
+
+                //Screen Rim
+                float2 screenUV = input.positionNDC.xy / input.positionNDC.w;
+                float rawDepth = SampleSceneDepth(screenUV);
+                float linearDepth = LinearEyeDepth(rawDepth, _ZBufferParams);
+                float2 screenOffset = float2(lerp(-1, 1, step(0, normalVS.x)) * _RimOffset / _ScreenParams.x / max(1,pow(linearDepth, 2)), 0);
+                float offsetDepth = SampleSceneDepth(screenUV + screenOffset);
+                float offsetLinearDepth = LinearEyeDepth(offsetDepth, _ZBufferParams);
+
+                float Rim = saturate(offsetLinearDepth - linearDepth);
+                Rim = step(_RimThreshold, Rim) * _RimIntensity;
+                Rim *= _RimColor * baseColor;
+                
+                float fresnelPower = 6;
+                float fresnelClamp = 0.8;
+                float fresnel = 1 - saturate(NoV);
+                fresnel = pow(fresnel, fresnelPower);
+                fresnel = fresnel * fresnelClamp + (1 - fresnelClamp);
+
+
+                float3 albedo = diffuse + Specular + Metallic;
+                albedo =  1 - (1 - Rim * fresnel) * (1 - albedo);
+                albedo +=  FlowColor;
 
                 
                 //环境光
