@@ -8,6 +8,7 @@ Shader "Unlit/Genshin_Face_Render"
         _AmbientColor ("Ambient Color", Color) = (0.5,0.5,0.5,1)
         _ShadowColor ("Shadow Color", Color) = (0.7,0.7,0.7,1)
         _AmbientIntensity ("Ambient Intensity", Range(0, 1)) = 0.5
+        _SSSColor ("SSS Color", Color) = (1,1,1,1)
        
         _RampTex ("Ramp Texture", 2D) = "white" {}
         _SDFTex ("SDF Tex", 2D) = "white" {}
@@ -121,6 +122,7 @@ Shader "Unlit/Genshin_Face_Render"
             float4 _RimColor;
             float _RimIntensity;
             float _RimThreshold;
+            float4 _SSSColor;
         CBUFFER_END
 
         TEXTURE2D(_BaseMap); //贴图采样  
@@ -281,9 +283,6 @@ Shader "Unlit/Genshin_Face_Render"
                 baseColor = lerp(baseColor, baseColor * ToonTex.rgb, _ToonTexFac);
                 baseColor = lerp(lerp(baseColor, baseColor * SphereTex.rgb, _SphereTexFac), lerp(baseColor, baseColor + SphereTex.rgb, _SphereTexFac), _SphereMulAdd);
 
-
-                //ILM
-               // float4 ILMTex = SAMPLE_TEXTURE2D(_ILMTex, sampler_ILMTex, input.uv);
                 //RampV
                 float MatEnum0 = 0.0;
                 float MatEnum1 = 0.3;
@@ -302,11 +301,7 @@ Shader "Unlit/Genshin_Face_Render"
 
                 float3 headForward = normalize(_HeadForward - _HeadCenter);
                 float3 headRight = normalize(_HeadRight - _HeadCenter);
-
                 float3 headUp = normalize(cross(headForward, headRight));
-
-                //float3 LpU = length(L) * (dot(L, headUp) / (length(L) * length(headUp))) * (headUp/length(headUp));
-
                 float3 LpU = dot(L, headUp) / pow(length(headUp), 2) * headUp;
                 float3 LpHeadHorizon = L - LpU;
 
@@ -323,10 +318,12 @@ Shader "Unlit/Genshin_Face_Render"
                 float sdfRembrandRight = SAMPLE_TEXTURE2D(_SDFTex,sampler_SDFTex, input.uv).a;
                 float mixSDF = lerp(sdfRembrandRight, sdfRembrandLeft, exposeRight);
 
-                float width = 0.025; // 调大调小
-                float SDF = smoothstep(mixValue - width, mixValue + width, mixSDF);
-                //float SDF = step(mixValue, mixSDF);
+                float width = 0.005; // 调大调小
+                float SDF = step(mixValue - width, mixSDF);
+                float SDF2 = step(mixValue + width, mixSDF);
+                SDF = lerp(SDF,SDF2,mixSDF);
                 SDF = lerp(0, SDF, step(0, dot(normalize(LpHeadHorizon), normalize(headForward))));
+                SDF2 = lerp(0, SDF, step(0, dot(normalize(LpHeadHorizon), normalize(headForward))));
 
                 float4 shadowTex = SAMPLE_TEXTURE2D(_ShadowMaskTex, sampler_ShadowMaskTex, input.uv);
 
@@ -334,14 +331,29 @@ Shader "Unlit/Genshin_Face_Render"
                 SDF = lerp(SDF, 1, shadowTex.a);
                 SDF *= shadowAttenuation;
 
+                SDF2 *= shadowTex.g;
+                SDF2 = lerp(SDF, 1, shadowTex.a);
+                SDF2 *= shadowAttenuation;
+
                 float RampV = _RampMapRow4/10 - 0.05;
                 float RampU = clamp(SDF, 0.005,0.995);
-                //float RampClampMin = 0.003;
+
+                float RampV2 = _RampMapRow1/10 - 0.05;
+                float RampU2 = clamp(SDF2, 0.005,0.995);
                 float2 RampDayUV = float2(RampU, 1 - RampV);
                 float2 RampNightUV = float2(RampU, 1 - (RampV + 0.5));
 
+                float2 RampDayUV2 = float2(RampU2, 1 - RampV2);
+                float2 RampNightUV2 = float2(RampU2, 1 - (RampV2 + 0.5));
+
                 float Day = (L.y + 1) / 2;
                 float3 RampColor = lerp(SAMPLE_TEXTURE2D(_RampTex,sampler_RampTex,RampNightUV),SAMPLE_TEXTURE2D(_RampTex,sampler_RampTex,RampDayUV),Day);
+
+                float3 RampColor2 = lerp(SAMPLE_TEXTURE2D(_RampTex,sampler_RampTex,RampNightUV2),SAMPLE_TEXTURE2D(_RampTex,sampler_RampTex,RampDayUV2),Day);
+
+                RampColor2 *= _SSSColor * 5;
+
+                RampColor = lerp(RampColor, RampColor2, SDF);
 
                 float3 shadowColor = baseColor * RampColor * _ShadowColor.rgb;
 
@@ -397,23 +409,34 @@ Shader "Unlit/Genshin_Face_Render"
                 float3 albedo = diffuse;
                 albedo =  1 - (1 - Rim * fresnel) * (1 - albedo);
                 albedo +=  FlowColor;
+                albedo *= lightColor;
 
 
                 //环境光
-                float3 ambient = SampleSH(N);
-                ambient = lerp(ambient, baseColor, _AmbientIntensity);
+                float3 ambient = SampleSH(normalize(lerp(N, float3(1, 1, 1), 0.7)));
 
-                //float Alpha = SAMPLE_TEXTURE2D(_AlphaTex,sampler_AlphaTex,input.uv).a;
+                // 只在阴影区叠加环境光
+                albedo = lerp(albedo, albedo + ambient * _AmbientIntensity, 1 - SDF);
 
+                //多光源
+                int additionalLightsCount = GetAdditionalLightsCount();
+                for (int i = 0; i < additionalLightsCount; ++i)
+                {
+                    Light light = GetAdditionalLight(i, input.positionWS);
+                    float3 L = normalize(light.direction);
+                    //float NoL = saturate(dot(N, L));
+                    float shadowAtten = light.shadowAttenuation;
+                    float3 addDiffuse = SDF * light.color.rgb * shadowAtten;
+                    albedo += addDiffuse * baseColor;
+                }
 
                 half4 col = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv);
-                //half res=lerp(input.vertexColor,col, input.vertexColor.g);
                 return float4(albedo,1);
             }
 
         ENDHLSL
         }
-        Pass
+       Pass
         {
             Name "DepthOnly"
             Tags { "LightMode" = "DepthOnly" }
@@ -423,8 +446,8 @@ Shader "Unlit/Genshin_Face_Render"
 
             HLSLPROGRAM
 
-            #pragma mulit_compile_instancing
-            #pragma mulit_compile_DOTS_INSTANCING_ON
+            #pragma multi_compile_instancing
+            #pragma multi_compile_DOTS_INSTANCING_ON
 
             #pragma vertex vert
             #pragma fragment fragDepth
@@ -441,7 +464,7 @@ Shader "Unlit/Genshin_Face_Render"
                 float4 positionCS : SV_POSITION;
             };
 
-            float _AlpahClip;
+            float _AlphaClip;
 
             Varyings vert(Attributes IN)
             {
@@ -452,8 +475,8 @@ Shader "Unlit/Genshin_Face_Render"
 
             float4 fragDepth(Varyings IN) : SV_Target
             {
-                clip(1.0 - _AlpahClip);
-                return 0;
+                clip(1.0 - _AlphaClip);
+                return float4(0,0,0,0);
             }
             ENDHLSL
         }
@@ -466,8 +489,8 @@ Shader "Unlit/Genshin_Face_Render"
 
             HLSLPROGRAM
 
-            #pragma mulit_compile_instancing
-            #pragma mulit_compile_DOTS_INSTANCING_ON
+            #pragma multi_compile_instancing
+            #pragma multi_compile_DOTS_INSTANCING_ON
 
             #pragma vertex vert
             #pragma fragment frag
@@ -490,7 +513,7 @@ Shader "Unlit/Genshin_Face_Render"
                 float4 tangentWS : TEXCOORD2;
             };
 
-            float _AlpahClip;
+            float _AlphaClip;
 
             Varyings vert(Attributes input)
             {
