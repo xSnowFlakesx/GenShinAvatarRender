@@ -3,7 +3,6 @@ Shader "Unlit/GenShin_Render"
     Properties //着色器的输入 
     {
         _BaseMap ("Base Color", 2D) = "white" {}
-        _AlphaTex("Alpha Tex", 2D) = "white"
         _ILMTex ("ILM Texture", 2D) = "white" {}
         _DiffuseColor ("Diffuse Color", Color) = (1,1,1,1)
         _AmbientColor ("Ambient Color", Color) = (0.5,0.5,0.5,1)
@@ -14,6 +13,7 @@ Shader "Unlit/GenShin_Render"
         _RampTex ("Ramp Texture", 2D) = "white" {}
 
         _ToonTex("Toon Tex", 2D) = "white" {}
+        _SphereTex("Sphere Tex", 2D) = "white" {}
 
         _BaseTexFac("BaseTexFac", Range(0, 1)) = 1
         _ToonTexFac("ToonTexFac", Range(0, 1)) = 1
@@ -69,9 +69,6 @@ Shader "Unlit/GenShin_Render"
         _NyxNoiseSpeed("Nyx Noise Speed", Float) = (1, 1, 0, 0)
         _NyxNoiseIntensity("Nyx Noise Intensity", Range(0, 10)) = 1
         _NyxLineSpeed("Nyx Line Speed", Float) = (1,1,0,0)
-
-
-        _SphereTex("Sphere Tex", 2D) = "white" {}
         
     }
     SubShader
@@ -120,7 +117,7 @@ Shader "Unlit/GenShin_Render"
             float4 _BaseMap_ST;
             float4 _NormalMap_ST;
             float _BumpScale;
-            float4 DiffuseColor;
+            float4 _DiffuseColor;
             float _BaseTexFac;
             float _ToonTexFac;
             float _SphereTexFac;
@@ -160,8 +157,6 @@ Shader "Unlit/GenShin_Render"
         SAMPLER(sampler_RampTex);
         TEXTURE2D(_MetallicTex);
         SAMPLER(sampler_MetallicTex);
-        TEXTURE2D(_AlphaTex);
-        SAMPLER(sampler_AlphaTex);
         TEXTURE2D(_FlowMask);
         SAMPLER(sampler_FlowMask);
         TEXTURE2D(_FlowMap);
@@ -310,7 +305,7 @@ Shader "Unlit/GenShin_Render"
                 float4 SphereTex = SAMPLE_TEXTURE2D(_SphereTex, sampler_SphereTex, matCapUV);
 
                 float3 baseColor = _AmbientColor.rgb;
-                baseColor = saturate(lerp(baseColor, baseColor + DiffuseColor.rgb, 0.6));
+                baseColor = saturate(lerp(baseColor, baseColor + _DiffuseColor.rgb, 0.6));
                 baseColor = lerp(baseColor, baseColor * BaseTex.rgb, _BaseTexFac);
                 baseColor = lerp(baseColor, baseColor * ToonTex.rgb, _ToonTexFac);
                 baseColor = lerp(lerp(baseColor, baseColor * SphereTex.rgb, _SphereTexFac), lerp(baseColor, baseColor + SphereTex.rgb, _SphereTexFac), _SphereMulAdd);
@@ -363,7 +358,6 @@ Shader "Unlit/GenShin_Render"
                 diffuse = lerp(GrayShadowColor, baseColor, LambertStep);
                 diffuse = lerp(DarkShadowColor, diffuse, saturate(ILMTex.g * 2));
                 diffuse = lerp(diffuse, baseColor, saturate(ILMTex.g - 0.5) * 2);
-                //diffuse *= lightColor;
 
                 //Highlight
                 float blinnPhong = step(0,NoL) * pow(max(0,NoH),_SpecExpon);
@@ -378,8 +372,6 @@ Shader "Unlit/GenShin_Render"
 
                 
 
-                
-                //float specular = SAMPLE_TEXTURE2D(_ILMTex, sampler_ILMTex, input.uv).r;
 
                 
                 //Flow Light
@@ -407,12 +399,6 @@ Shader "Unlit/GenShin_Render"
 
                 
 
-                // // 计算 FlowColor 的强度（可用 FlowMask 或 FlowColor 的亮度）
-                // float flowStrength = saturate(length(FlowColor)); // 或直接用 FlowMask
-
-                // // 用 flowStrength 控制插值
-                // float3 finalAlbedo = lerp(albedo, FlowColor, flowStrength);
-
                 //Screen Rim
                 float2 screenUV = input.positionNDC.xy / input.positionNDC.w;
                 float rawDepth = SampleSceneDepth(screenUV);
@@ -435,18 +421,28 @@ Shader "Unlit/GenShin_Render"
                 float3 albedo = diffuse + Specular + Metallic;
                 albedo =  1 - (1 - Rim * fresnel) * (1 - albedo);
                 albedo +=  FlowColor;
+                albedo *= lightColor;
 
                 
                 //环境光
-                float3 ambient = SampleSH(N);
-                ambient = lerp(ambient, baseColor, _AmbientIntensity);
+                float3 ambient = SampleSH(normalize(lerp(N, float3(1, 1, 1), 0.7)));
+                // 只在阴影区叠加环境光
+                albedo = lerp(albedo, albedo + ambient *  _AmbientIntensity, 1 - LambertStep);
 
-                float Alpha = SAMPLE_TEXTURE2D(_AlphaTex,sampler_AlphaTex,input.uv).a;
+                //多光源
+                int additionalLightsCount = GetAdditionalLightsCount();
+                for (int i = 0; i < additionalLightsCount; ++i)
+                {
+                    Light light = GetAdditionalLight(i, input.positionWS);
+                    float3 L = normalize(light.direction);
+                    float NoL = saturate(dot(N, L));
+                    float shadowAtten = light.shadowAttenuation;
+                    float3 addDiffuse = NoL * light.color.rgb * shadowAtten;
+                    albedo += addDiffuse * baseColor;
+                }
 
-
-                half4 col = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv);
-                //half res=lerp(input.vertexColor,col, input.vertexColor.g);
-                return float4(albedo,Alpha);
+                half4 col = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv);;
+                return float4(albedo,1);
             }
 
         ENDHLSL
@@ -461,8 +457,8 @@ Shader "Unlit/GenShin_Render"
 
             HLSLPROGRAM
 
-            #pragma mulit_compile_instancing
-            #pragma mulit_compile_DOTS_INSTANCING_ON
+            #pragma multi_compile_instancing
+            #pragma multi_compile_DOTS_INSTANCING_ON
 
             #pragma vertex vert
             #pragma fragment fragDepth
@@ -479,7 +475,7 @@ Shader "Unlit/GenShin_Render"
                 float4 positionCS : SV_POSITION;
             };
 
-            float _AlpahClip;
+            float _AlphaClip;
 
             Varyings vert(Attributes IN)
             {
@@ -490,8 +486,8 @@ Shader "Unlit/GenShin_Render"
 
             float4 fragDepth(Varyings IN) : SV_Target
             {
-                clip(1.0 - _AlpahClip);
-                return 0;
+                clip(1.0 - _AlphaClip);
+                return float4(0,0,0,0);
             }
             ENDHLSL
         }
@@ -504,8 +500,8 @@ Shader "Unlit/GenShin_Render"
 
             HLSLPROGRAM
 
-            #pragma mulit_compile_instancing
-            #pragma mulit_compile_DOTS_INSTANCING_ON
+            #pragma multi_compile_instancing
+            #pragma multi_compile_DOTS_INSTANCING_ON
 
             #pragma vertex vert
             #pragma fragment frag
@@ -528,7 +524,7 @@ Shader "Unlit/GenShin_Render"
                 float4 tangentWS : TEXCOORD2;
             };
 
-            float _AlpahClip;
+            float _AlphaClip;
 
             Varyings vert(Attributes input)
             {
@@ -682,7 +678,7 @@ Shader "Unlit/GenShin_Render"
 
                 #if _NyxFire
                 {
-                // 火焰扰动UV，建议用世界坐标Y和时间做流动
+                // 火焰扰动UV，用世界坐标Y和时间做流动
                 float2 flameUV = float2(positionWS.xz * _NyxNoiseSpeed.xy + _Time.y * _NyxNoiseSpeed.zw);
                 
 
@@ -734,15 +730,12 @@ Shader "Unlit/GenShin_Render"
                     float2 outlineColorUV = float2(NyxLightMap, frac(_Time.y * 0.1));
                     float3 outlineColor = SAMPLE_TEXTURE2D(_NyxRamp, sampler_NyxRamp, outlineColorUV).rgb;
                     outlineColor *= 3;
-                    //float3 outlineColor = 1;
                     float4 color = float4(0,0,0,0);
                 #if _NyxFire
                 {
                 color = float4(outlineColor,1);
                 }
                 #endif
-                
-                //color.rgb = MixFog(color.rgb, input.fogFactor);
 
                 return color;
             }
@@ -842,13 +835,11 @@ Shader "Unlit/GenShin_Render"
             CBUFFER_START(UnityPerMaterial)
             float _OutLineWidth;
             float _MaxOutlineZoffset;
-            //float _MaterialIDUSE; // 添加材质ID变量
             float4 _OutlineColor0;
             float4 _OutlineColor1;
             float4 _OutlineColor2;
             float4 _OutlineColor3;
             float4 _OutlineColor4;
-            //float4 _Color;
             float4 _BaseMap_ST;
             CBUFFER_END
 
