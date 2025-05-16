@@ -1,0 +1,171 @@
+Shader "Unlit/Nyx_Point_Code"
+{
+    Properties
+    {
+        _BaseMap ("Base Map", 2D) = "white" {}
+        _BaseColor ("Base Color", Color) = (1,1,1,1)
+        _RampTexture ("Ramp Texture", 2D) = "white" {}
+        _RampSpeed ("Ramp Speed", Float) = (1,1,0,0)
+        _VerticalBillboard("Vertical Billsboard", Range(0,1)) = 1
+        _FireNoise("Fire Noise", 2D) = "white" {}
+        _FireSpeed("Fire Speed", Float) = (1,1,1,1)
+        _ChangeAmount("Change Amount", Range(0, 1)) = 0.5
+        _FireMask("Fire Mask", 2D) = "white" {}
+        _LEDCount("LED Count", Float) = 5
+        _AlphaMaskSpeed("Alpha Mask", Float) = (1,1,1,1)
+    }
+    SubShader
+    {
+        Tags { "RenderType"="Transparent" "RenderPipeline"="UniversalRenderPipeline" "IgnoreProjector"="Ture" "DisableBatching"="True" "Queue"="Transparent"} // 禁用批处理保持广告牌效果
+        LOD 100
+
+        Pass
+        {
+            Name "ForwardLit"
+            Tags { "LightMode"="UniversalForward" }
+            Cull Off
+            Blend SrcAlpha OneMinusSrcAlpha
+            ZWrite Off   
+
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma multi_compile_fog
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
+            #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
+            #pragma multi_compile _ _SHADOWS_SOFT
+
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+
+            struct Attributes
+            {
+                float4 positionOS : POSITION;
+                float3 normalOS   : NORMAL;
+                float2 uv         : TEXCOORD0;
+            };
+
+            struct Varyings
+            {
+                float4 positionCS : SV_POSITION;
+                float2 uv         : TEXCOORD0;
+                float3 normalWS   : TEXCOORD1;
+                float3 positionWS : TEXCOORD2;
+            };
+
+            CBUFFER_START(UnityPerMaterial)
+                float4 _BaseColor;
+                float4 _BaseMap_ST;
+                float _ChangeAmount;
+                float4 _FireSpeed;
+                float _VerticalBillboard;
+                float4 _AlphaMaskSpeed;
+                float _LEDCount;
+                float4 _RampSpeed;
+            CBUFFER_END
+
+            TEXTURE2D(_BaseMap);
+            SAMPLER(sampler_BaseMap);
+            sampler2D _FireNoise;
+            sampler2D _FireMask;
+            sampler2D _RampTexture;
+            
+
+            Varyings vert (Attributes IN)
+            {
+                Varyings OUT;
+
+                // 计算广告牌中心
+                float3 center = float3(0, 0, 0);
+                float3 viewer = TransformWorldToObject(_WorldSpaceCameraPos);
+
+                //计算广告牌方向
+                float3 normalDir = viewer - center;
+                normalDir.y = normalDir.y * _VerticalBillboard;
+                normalDir = normalize(normalDir);
+
+                float3 upDir = abs(normalDir.y) > 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
+                float3 rightDir = normalize(cross(upDir, normalDir));
+                upDir = normalize(cross(normalDir, rightDir));
+                rightDir = -rightDir;
+                
+                float3 centerOffset = IN.positionOS.xyz - center;
+                float3 localPos = center + rightDir * centerOffset.x + upDir * centerOffset.y + normalDir * centerOffset.z;
+                
+                OUT.uv = TRANSFORM_TEX(IN.uv, _BaseMap);
+                OUT.positionCS = TransformObjectToHClip(localPos);
+                OUT.normalWS = TransformObjectToWorldNormal(IN.normalOS);
+                OUT.positionWS = TransformObjectToWorld(localPos);
+
+                return OUT;
+            }
+
+            half4 frag (Varyings IN) : SV_Target
+            {
+                float3 normalWS = normalize(IN.normalWS);
+                float3 positionWS = IN.positionWS;
+
+                float3 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, IN.uv).rgb;
+                float2 NoiseUV = float2(IN.uv * float2(3,3) + float2(1,1) + _FireSpeed.xy * _Time.y);
+                float3 NoiseFire = tex2D(_FireNoise, NoiseUV).rgb;
+
+                float2 c = (positionWS.xyz - TransformObjectToWorld(float3(0, 0, 0)).xyz).xy;
+                c *= _FireSpeed.xy; 
+
+                float2 NyxpannerUV = c + _Time.y * _FireSpeed.zw; 
+
+                float NoiseFireG = NoiseFire.g;
+                NoiseFireG = saturate(NoiseFireG); // 保证在0~1
+                NoiseFireG = step(IN.uv.y, NoiseFireG);
+
+                float3 FireColor = _BaseColor;
+                FireColor *= 20;
+
+               
+
+                // --- 裁剪逻辑（以贴图alpha为例，阈值0.1） ---
+                //clip(step(1-IN.uv.y, NoiseFire.g) - 0.5);
+                // LED点阵分段参数
+                float ledCount = _LEDCount; // 一行有多少个LED点，可调
+
+                //UV分成ledCount×ledCount的格子，每个格子内的像素都用同一个UV采样，实现LED点阵分块效果
+                float2 ledUV = float2(
+                floor(IN.uv.x * ledCount) / ledCount,
+                floor(IN.uv.y * ledCount) / ledCount
+                );
+
+                // 计算当前像素在格子内的局部坐标（0~1）
+                float2 cellUV = frac(IN.uv * ledCount);
+
+                // 圆形mask（让每个LED块呈现为圆形光点）
+                float2 center = float2(0.5, 0.5); // 圆心
+                float radius = 0.15;              // 半径，可调，越小点越小
+                float dist = distance(cellUV, center);
+                float circleMask = smoothstep(radius, radius - 0.08, dist); // 0.08为边缘羽化宽度
+
+                // 三角形mask（等边三角形，底边在下，顶点在上）
+                float triMask = step(cellUV.y, 1.0 - abs(cellUV.x * 2.0 - 1.0));
+                // 控制亮团的阈值和动态变化
+                float alphaAddMask = tex2D(_FireNoise, ledUV + _AlphaMaskSpeed.xy * _Time.y).g;
+                float phase = ledUV.x * 13.37 + ledUV.y * 17.77; // 随意选的常数，保证每块不同
+                float threshold = 0.4 + 0.2 * sin(_Time.y * 3 + phase);
+                float ledMask = step(threshold, alphaAddMask);
+
+                // 采样Ramp贴图，使用火焰噪声g通道作为Ramp的采样坐标
+                float2 rampUV = float2(frac(IN.uv.y * _RampSpeed.y + _Time.y), 0.5);
+                float3 rampColor = tex2D(_RampTexture, rampUV).rgb;
+
+                float3 albedo = rampColor * 10.0;
+
+                // 只有被扫到的LED才亮
+                float alpha = circleMask * ledMask * saturate(step(_ChangeAmount, NoiseFireG)); // 或 smoothstep(_FireThreshold, 1, NoiseFire.g) 实现羽化
+
+                float3 color = albedo;
+                
+
+                return float4(color, alpha);
+            }
+            ENDHLSL
+        }
+    }
+}
