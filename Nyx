@@ -1,0 +1,130 @@
+Shader "Unlit/Nyx_Code"
+{
+    Properties
+    {
+        _BaseMap ("Base Map", 2D) = "white" {}
+        _BaseColor ("Base Color", Color) = (1,1,1,1)
+        _VerticalBillboard("Vertical Billsboard", Range(0,1)) = 1
+        _RampTex("Ramp Texture", 2D) = "white" {}
+        _FireNoise("Fire Noise", 2D) = "white" {}
+        _FireSpeed("Fire Speed", Float) = (1,1,1,1)
+        _ChangeAmount("Change Amount", Range(0, 1)) = 0.5
+        _FireMask("Fire Mask", 2D) = "white" {}
+    }
+    SubShader
+    {
+        Tags { "RenderType"="Transparent" "RenderPipeline"="UniversalRenderPipeline" "IgnoreProjector"="Ture" "DisableBatching"="True" "Queue"="Transparent"} // 禁用批处理保持广告牌效果
+        LOD 100
+
+        Pass
+        {
+            Name "ForwardLit"
+            Tags { "LightMode"="UniversalForward" }
+            Cull Off
+            Blend SrcAlpha OneMinusSrcAlpha
+            ZWrite Off   
+
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma multi_compile_fog
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
+            #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
+            #pragma multi_compile _ _SHADOWS_SOFT
+
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+
+            struct Attributes
+            {
+                float4 positionOS : POSITION;
+                float3 normalOS   : NORMAL;
+                float2 uv         : TEXCOORD0;
+            };
+
+            struct Varyings
+            {
+                float4 positionCS : SV_POSITION;
+                float2 uv         : TEXCOORD0;
+                float3 normalWS   : TEXCOORD1;
+                float3 positionWS : TEXCOORD2;
+            };
+
+            CBUFFER_START(UnityPerMaterial)
+                float4 _BaseColor;
+                float4 _BaseMap_ST;
+                float _ChangeAmount;
+                float4 _FireSpeed;
+                float _VerticalBillboard;
+            CBUFFER_END
+
+            TEXTURE2D(_BaseMap);
+            SAMPLER(sampler_BaseMap);
+            sampler2D _FireNoise;
+            sampler2D _RampTex;
+            sampler2D _FireMask;
+            
+
+            Varyings vert (Attributes IN)
+            {
+                Varyings OUT;
+
+                // 计算广告牌中心
+                float3 center = float3(0, 0, 0);
+                float3 viewer = TransformWorldToObject(_WorldSpaceCameraPos);
+
+                //计算广告牌方向
+                float3 normalDir = viewer - center;
+                normalDir.y = normalDir.y * _VerticalBillboard;
+                normalDir = normalize(normalDir);
+
+                float3 upDir = abs(normalDir.y) > 0.999 ? float3(0, 0, 1) : float3(0, 1, 0);
+                float3 rightDir = normalize(cross(upDir, normalDir));
+                upDir = normalize(cross(normalDir, rightDir));
+                rightDir = -rightDir;
+                
+                float3 centerOffset = IN.positionOS.xyz - center;
+                float3 localPos = center + rightDir * centerOffset.x + upDir * centerOffset.y + normalDir * centerOffset.z;
+                
+                OUT.uv = TRANSFORM_TEX(IN.uv, _BaseMap);
+                OUT.positionCS = TransformObjectToHClip(localPos);
+                OUT.normalWS = TransformObjectToWorldNormal(IN.normalOS);
+                OUT.positionWS = TransformObjectToWorld(localPos);
+
+                return OUT;
+            }
+
+            half4 frag (Varyings IN) : SV_Target
+            {
+                float3 normalWS = normalize(IN.normalWS);
+                float3 positionWS = IN.positionWS;
+
+                float3 baseMap = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, IN.uv).rgb;
+                float2 NoiseUV = float2(IN.uv * float2(1.5,1) + float2(1,1) + _FireSpeed.xy * _Time.y);
+                float3 NoiseFire = tex2D(_FireNoise, NoiseUV).rgb;
+
+                float2 c = (positionWS.xyz - TransformObjectToWorld(float3(0, 0, 0)).xyz).xy;
+                    c *= _FireSpeed.xy; 
+                    float2 NyxpannerUV = c + _Time.y * _FireSpeed.zw; 
+                    float NoiseFireG = NoiseFire.g;
+                    NoiseFireG = saturate(NoiseFireG); // 保证在0~1
+                    float2 NoiseFireUV = float2(NoiseFireG, frac(_Time.y * 0.1));
+                    float3 FireColor = tex2D(_RampTex, NoiseFireUV).rgb;
+                    FireColor *= 50;
+
+                float3 albedo = FireColor * _BaseColor.rgb;
+
+                // --- 裁剪逻辑（以贴图alpha为例，阈值0.1） ---
+                //clip(step(1-IN.uv.y, NoiseFire.g) - 0.5);
+
+                float alpha = saturate(smoothstep((IN.uv.y) - _ChangeAmount, (IN.uv.y)+0.1, NoiseFire.g))*tex2D(_FireMask,IN.uv + NoiseFireUV*0.1).r; // 或 smoothstep(_FireThreshold, 1, NoiseFire.g) 实现羽化
+
+                float3 color = albedo;
+                
+
+                return float4(color, alpha);
+            }
+            ENDHLSL
+        }
+    }
+}
