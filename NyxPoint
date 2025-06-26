@@ -2,6 +2,7 @@ Shader "Unlit/Nyx_Point_Code"
 {
     Properties
     {
+        [Toggle(_ENABLE_EFFECT)] _EnableEffect("Show Effect", Float) = 1 // 开关
         _BaseMap ("Base Map", 2D) = "white" {}
         _BaseColor ("Base Color", Color) = (1,1,1,1)
         _RampTexture ("Ramp Texture", 2D) = "white" {}
@@ -31,6 +32,7 @@ Shader "Unlit/Nyx_Point_Code"
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile_fog
+            #pragma shader_feature _ENABLE_EFFECT
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
             #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
             #pragma multi_compile _ _SHADOWS_SOFT
@@ -54,6 +56,7 @@ Shader "Unlit/Nyx_Point_Code"
             };
 
             CBUFFER_START(UnityPerMaterial)
+                float _EnableEffect;
                 float4 _BaseColor;
                 float4 _BaseMap_ST;
                 float _ChangeAmount;
@@ -102,6 +105,7 @@ Shader "Unlit/Nyx_Point_Code"
 
             half4 frag (Varyings IN) : SV_Target
             {
+                #ifdef _ENABLE_EFFECT
                 float3 normalWS = normalize(IN.normalWS);
                 float3 positionWS = IN.positionWS;
 
@@ -109,7 +113,7 @@ Shader "Unlit/Nyx_Point_Code"
                 float2 NoiseUV = float2(IN.uv * float2(3,3) + float2(1,1) + _FireSpeed.xy * _Time.y);
                 float3 NoiseFire = tex2D(_FireNoise, NoiseUV).rgb;
 
-                float2 c = (positionWS.xyz - TransformObjectToWorld(float3(0, 0, 0)).xyz).xy;
+                float2 c = (positionWS.xyz - TransformObjectToWorld(float3(0, 0, 0)).xyz).xy;//世界空间UV
                 c *= _FireSpeed.xy; 
 
                 float2 NyxpannerUV = c + _Time.y * _FireSpeed.zw; 
@@ -118,7 +122,7 @@ Shader "Unlit/Nyx_Point_Code"
                 NoiseFireG = saturate(NoiseFireG); // 保证在0~1
                 NoiseFireG = step(IN.uv.y, NoiseFireG);
 
-                float3 FireColor = _BaseColor;
+                float3 FireColor = _BaseColor.rgb;
                 FireColor *= 20;
 
                
@@ -139,9 +143,9 @@ Shader "Unlit/Nyx_Point_Code"
 
                 // 圆形mask（让每个LED块呈现为圆形光点）
                 float2 center = float2(0.5, 0.5); // 圆心
-                float radius = 0.15;              // 半径，可调，越小点越小
+                float radius = 0.17;              // 半径，可调，越小点越小
                 float dist = distance(cellUV, center);
-                float circleMask = smoothstep(radius, radius - 0.08, dist); // 0.08为边缘羽化宽度
+                float circleMask = smoothstep(radius, radius - 0.03, dist); // 0.08为边缘羽化宽度
 
                 // 三角形mask（等边三角形，底边在下，顶点在上）
                 float triMask = step(cellUV.y, 1.0 - abs(cellUV.x * 2.0 - 1.0));
@@ -158,12 +162,16 @@ Shader "Unlit/Nyx_Point_Code"
                 float3 albedo = rampColor * 10.0;
 
                 // 只有被扫到的LED才亮
-                float alpha = circleMask * ledMask * saturate(step(_ChangeAmount, NoiseFireG)); // 或 smoothstep(_FireThreshold, 1, NoiseFire.g) 实现羽化
-
+                float alpha = circleMask * ledMask * saturate(step(_ChangeAmount, NoiseFireG)); 
                 float3 color = albedo;
+                #else
+                float alpha = 0;
+                float3 color = float3(0,0,0);
+
+                #endif
                 
 
-                return float4(color, alpha);
+                return float4(color, alpha * _EnableEffect);
             }
             ENDHLSL
         }
