@@ -2,6 +2,8 @@ Shader "Unlit/Nyx_Code"
 {
     Properties
     {
+        [Toggle(_ENABLE_EFFECT)] _EnableEffect("Show Effect", Float) = 1 // 开关
+
         _BaseMap ("Base Map", 2D) = "white" {}
         _BaseColor ("Base Color", Color) = (1,1,1,1)
         _VerticalBillboard("Vertical Billsboard", Range(0,1)) = 1
@@ -28,6 +30,7 @@ Shader "Unlit/Nyx_Code"
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile_fog
+            #pragma shader_feature _ENABLE_EFFECT
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
             #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
             #pragma multi_compile _ _SHADOWS_SOFT
@@ -51,6 +54,7 @@ Shader "Unlit/Nyx_Code"
             };
 
             CBUFFER_START(UnityPerMaterial)
+                float _EnableEffect;
                 float4 _BaseColor;
                 float4 _BaseMap_ST;
                 float _ChangeAmount;
@@ -96,6 +100,9 @@ Shader "Unlit/Nyx_Code"
 
             half4 frag (Varyings IN) : SV_Target
             {
+                // 开关判断
+                #ifdef _ENABLE_EFFECT
+
                 float3 normalWS = normalize(IN.normalWS);
                 float3 positionWS = IN.positionWS;
 
@@ -103,8 +110,9 @@ Shader "Unlit/Nyx_Code"
                 float2 NoiseUV = float2(IN.uv * float2(1.5,1) + float2(1,1) + _FireSpeed.xy * _Time.y);
                 float3 NoiseFire = tex2D(_FireNoise, NoiseUV).rgb;
 
-                float2 c = (positionWS.xyz - TransformObjectToWorld(float3(0, 0, 0)).xyz).xy;
-                    c *= _FireSpeed.xy; 
+                float2 c = (positionWS.xyz - TransformObjectToWorld(float3(0, 0, 0)).xyz).xy;//世界空间UV
+                    c *= _FireSpeed.xy;
+                    
                     float2 NyxpannerUV = c + _Time.y * _FireSpeed.zw; 
                     float NoiseFireG = NoiseFire.g;
                     NoiseFireG = saturate(NoiseFireG); // 保证在0~1
@@ -120,9 +128,14 @@ Shader "Unlit/Nyx_Code"
                 float alpha = saturate(smoothstep((IN.uv.y) - _ChangeAmount, (IN.uv.y)+0.1, NoiseFire.g))*tex2D(_FireMask,IN.uv + NoiseFireUV*0.1).r; // 或 smoothstep(_FireThreshold, 1, NoiseFire.g) 实现羽化
 
                 float3 color = albedo;
+                #else
+                // 关闭效果
+                    float alpha = 0;
+                    float3 color = float3(0,0,0);
+                #endif
                 
 
-                return float4(color, alpha);
+                return float4(color, alpha * _EnableEffect);
             }
             ENDHLSL
         }
